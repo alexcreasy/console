@@ -19,6 +19,12 @@ load_state() {
   [ -f "${STATE_FILE}" ] && source "${STATE_FILE}" || true
   DEV_PROFILES="${DEV_PROFILES:-}"
   DEV_FULL="${DEV_FULL:-false}"
+  # Restore the domain the environment was brought up with, so commands run in a
+  # fresh shell (config/backend/operator/urls/status) generate hosts that match
+  # the live cluster. An explicit CONSOLE_CLUSTER_DOMAIN in this shell still wins.
+  if [ -z "${CONSOLE_CLUSTER_DOMAIN_OVERRIDE:-}" ] && [ -n "${DEV_DOMAIN:-}" ]; then
+    export CONSOLE_CLUSTER_DOMAIN="${DEV_DOMAIN}"
+  fi
 }
 
 has_profile() {
@@ -66,12 +72,22 @@ deploy_kafka() {
     cat "${REPO_ROOT}"/examples/kafka/*.yaml \
       | envsubst "${TEMPLATE_VARS}" \
       | kubectl apply -n "${KAFKA_NAMESPACE}" -f -
-    step "Adding internal 'plain' listener for in-cluster clients (Connect, operator-mode console)"
-    kubectl -n "${KAFKA_NAMESPACE}" patch kafka "${KAFKA_NAME}" --type=json \
-      -p='[{"op":"add","path":"/spec/kafka/listeners/-","value":{"name":"plain","port":9092,"type":"internal","tls":false}}]' \
-      2>/dev/null || step "(plain listener already present)"
+    # Only add the internal 'plain' listener if it isn't already there. Checking
+    # first (rather than swallowing patch errors) means a genuine patch failure
+    # surfaces instead of being reported as 'already present'.
+    if kubectl -n "${KAFKA_NAMESPACE}" get kafka "${KAFKA_NAME}" \
+         -o jsonpath='{.spec.kafka.listeners[?(@.name=="plain")].name}' 2>/dev/null | grep -q .; then
+      step "(plain listener already present)"
+    else
+      step "Adding internal 'plain' listener for in-cluster clients (Connect, operator-mode console)"
+      kubectl -n "${KAFKA_NAMESPACE}" patch kafka "${KAFKA_NAME}" --type=json \
+        -p='[{"op":"add","path":"/spec/kafka/listeners/-","value":{"name":"plain","port":9092,"type":"internal","tls":false}}]'
+    fi
   else
     info "Deploying lean Kafka topology (single dual-role KRaft node)"
+    # Reuse the documented JMX-exporter metrics rules rather than duplicating them.
+    kubectl apply -n "${KAFKA_NAMESPACE}" \
+      -f "${REPO_ROOT}/examples/kafka/010-ConfigMap-console-kafka-metrics.yaml" >/dev/null
     apply_templated "${MANIFESTS_DIR}/kafka-lean/kafka.yaml" "${KAFKA_NAMESPACE}"
   fi
   info "Waiting for Kafka '${KAFKA_NAME}' to become Ready (first run pulls images, can take a few minutes)"
@@ -128,8 +144,27 @@ deploy_profiles() {
   return 0
 }
 
+# Poll (up to $3 seconds, default 120) for a named resource to exist in ns $2.
+wait_for_resource() {
+  local res="$1" ns="$2" timeout="${3:-120}" waited=0
+  while [ "${waited}" -lt "${timeout}" ]; do
+    kubectl -n "${ns}" get "${res}" >/dev/null 2>&1 && return 0
+    sleep 2; waited=$((waited + 2))
+  done
+  return 1
+}
+
 wait_profiles_ready() {
-  has_profile metrics  && kubectl -n metrics rollout status statefulset/prometheus-console-prometheus --timeout=300s 2>/dev/null || true
+  if has_profile metrics; then
+    # The Prometheus operator creates this StatefulSet asynchronously after the
+    # Prometheus CR is applied, so wait for it to appear before checking rollout
+    # (a bare `rollout status` would immediately fail with 'not found').
+    if wait_for_resource statefulset/prometheus-console-prometheus metrics 120; then
+      kubectl -n metrics rollout status statefulset/prometheus-console-prometheus --timeout=300s || true
+    else
+      warn "Prometheus StatefulSet did not appear within 120s; metrics may not be ready yet"
+    fi
+  fi
   has_profile registry && kubectl -n registry rollout status deployment/apicurio-registry --timeout=300s || true
   has_profile keycloak && kubectl -n keycloak rollout status deployment/keycloak --timeout=300s || true
   has_profile connect  && kubectl -n "${KAFKA_NAMESPACE}" wait --for=condition=Ready kafkaconnect/console-connect --timeout=300s || true
@@ -153,6 +188,10 @@ teardown_keep_cluster() {
   for ns in "${KAFKA_NAMESPACE}" metrics registry keycloak; do
     kubectl delete namespace "${ns}" --ignore-not-found --timeout=120s || true
   done
+  # The metrics profile creates cluster-scoped RBAC that deleting the namespace
+  # leaves behind, so remove it explicitly.
+  kubectl delete clusterrole,clusterrolebinding console-prometheus-server \
+    --ignore-not-found || true
   helm uninstall strimzi-cluster-operator -n "${STRIMZI_NAMESPACE}" 2>/dev/null || true
   kubectl delete namespace "${STRIMZI_NAMESPACE}" --ignore-not-found || true
   rm -f "${STATE_FILE}" "${GEN_DIR}/console-config.yaml" "${GEN_DIR}/console-cr.yaml" "${GEN_DIR}/ca.crt"

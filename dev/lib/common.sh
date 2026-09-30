@@ -15,6 +15,9 @@ CLUSTER_SETUP_DIR="${REPO_ROOT}/systemtests/cluster-setup"
 
 # --- Cluster / topology defaults --------------------------------------------
 export CLUSTER_NAME="${CLUSTER_NAME:-console-local}"
+# Record whether the caller explicitly set the domain BEFORE we apply the
+# default, so load_state can restore the persisted domain only when they didn't.
+CONSOLE_CLUSTER_DOMAIN_OVERRIDE="${CONSOLE_CLUSTER_DOMAIN:-}"
 export CONSOLE_CLUSTER_DOMAIN="${CONSOLE_CLUSTER_DOMAIN:-127.0.0.1.nip.io}"
 export INGRESS_HTTP_PORT="${INGRESS_HTTP_PORT:-80}"
 export INGRESS_HTTPS_PORT="${INGRESS_HTTPS_PORT:-443}"
