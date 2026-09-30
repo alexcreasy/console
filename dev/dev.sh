@@ -38,6 +38,7 @@ Commands:
 
   ${C_BOLD}config${C_RESET}                           Regenerate .gen/console-config.yaml and
                                     .gen/console-cr.yaml from the live cluster.
+  ${C_BOLD}profiles${C_RESET}                         List the optional profiles and what each adds.
   ${C_BOLD}status${C_RESET}                           Show cluster + component health.
   ${C_BOLD}urls${C_RESET}                             Print component URLs.
   ${C_BOLD}down${C_RESET} [--keep-cluster]            Tear everything down (or resources only).
@@ -205,6 +206,37 @@ cmd_status() {
   cmd_urls
 }
 
+cmd_profiles() {
+  # Which profiles (if any) the running environment was brought up with, so we can
+  # flag the active ones. load_state is best-effort — the command works with no cluster.
+  load_state 2>/dev/null || true
+  info "Optional profiles (enable with: dev.sh up --profile <name>[,<name>...] | all)"
+  echo ""
+  _profile_entry metrics  "Prometheus operator + a Prometheus scraping Kafka" \
+    "Broker/topic metrics charts and cluster health in the console." "~1-1.5 GB"
+  _profile_entry registry "Apicurio Registry (in-memory)" \
+    "Schema registry integration — view/link schemas for topics." "~0.3 GB"
+  _profile_entry keycloak "Keycloak (dev mode) + a 'streamshub' realm" \
+    "OIDC login with demo users (admin-user/dev-user) and role-based access." "~0.6 GB"
+  _profile_entry connect  "A Strimzi KafkaConnect cluster" \
+    "Kafka Connect view — browse connectors and their tasks." "~0.7 GB"
+  echo "  Base stack (always on): Strimzi + one Kafka cluster (${KAFKA_NAME}) with demo topics."
+  if [ -n "${DEV_PROFILES}" ]; then
+    echo ""
+    echo "  ${C_GREEN}${C_BOLD}*${C_RESET} = enabled in the current environment (${DEV_PROFILES})."
+  fi
+}
+
+# _profile_entry <name> <deploys> <unlocks> <footprint>
+_profile_entry() {
+  local name="$1" deploys="$2" unlocks="$3" footprint="$4" mark="  "
+  has_profile "${name}" && mark="${C_GREEN}${C_BOLD}* ${C_RESET}"
+  printf "%s${C_BOLD}%-9s${C_RESET} %s\n" "${mark}" "${name}" "(footprint ${footprint})"
+  echo "    deploys:  ${deploys}"
+  echo "    unlocks:  ${unlocks}"
+  echo ""
+}
+
 cmd_urls() {
   load_state
   local d="${CONSOLE_CLUSTER_DOMAIN}"
@@ -254,6 +286,7 @@ main() {
   case "${cmd}" in
     up)        cmd_up "$@" ;;
     config)    cmd_config "$@" ;;
+    profiles)  cmd_profiles "$@" ;;
     backend)   cmd_backend "$@" ;;
     frontend)  cmd_frontend "$@" ;;
     operator)  cmd_operator "$@" ;;

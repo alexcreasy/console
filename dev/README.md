@@ -71,6 +71,7 @@ dev.sh backend                          Run API+UI locally for backend dev
 dev.sh frontend                         Run API+UI locally for frontend dev
 dev.sh operator                         Run the operator locally against the cluster
 dev.sh config                           Regenerate .gen/console-config.yaml + .gen/console-cr.yaml
+dev.sh profiles                         List the optional profiles and what each adds
 dev.sh status                           Cluster + component health
 dev.sh urls                             Print component URLs
 dev.sh down [--keep-cluster]            Tear down
